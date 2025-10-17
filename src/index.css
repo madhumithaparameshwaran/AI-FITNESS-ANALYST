@@ -1,0 +1,11 @@
+
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+body {
+	font-family: 'Inter', 'Roboto', Arial, sans-serif;
+	background: linear-gradient(135deg, #232946 0%, #6d5dfc 100%);
+	color: #f4f4f6;
+	min-height: 100vh;
+}
