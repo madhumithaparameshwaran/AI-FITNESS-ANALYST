@@ -2,6 +2,14 @@ import React, { useState, useMemo, useRef, useEffect } from 'react';
 import Login from './Login.jsx';
 import Register from './Register.jsx';
 
+// [1] SUPABASE DATABASE CONFIGURATION
+// App.jsx (or whichever file contains this code)
+// ... (Lines 1-5 are fine)
+import { createClient } from "@supabase/supabase-js"; 
+const supabaseUrl = "https://kjqtdqtjufjcmcuehoxp.supabase.co";
+const supabaseAnonKey = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImtqcXRkcXRqdWZqY21jdWVob3hwIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NjA1NDE1MjcsImV4cCI6MjA3NjExNzUyN30.k4QFQzKzt_coIFuvBbPOHzCTGe0YgzTGHWRWD3qTp7Q"; // <--- MUST have closing quote and semicolon
+const supabase = createClient(supabaseUrl, supabaseAnonKey);
+
 // GROQ API Configuration
 const GROQ_API_KEY = "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";
 const GROQ_MODEL = 'llama-3.3-70b-versatile';
@@ -48,10 +56,13 @@ const initialProfile = {
 
 const App = () => {
   const [profile, setProfile] = useState(initialProfile);
-  const [page, setPage] = useState('landing');  // 'landing' | 'app' | 'login' | 'register'
+  const [page, setPage] = useState('landing'); 	// 'landing' | 'app' | 'login' | 'register'
   const [planData, setPlanData] = useState(null);
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState(null);
+  // Supabase Auth State
+  const [session, setSession] = useState(null); 
+  const [isDataLoading, setIsDataLoading] = useState(true);
 
   // Chatbot states
   const [isChatOpen, setIsChatOpen] = useState(false);
@@ -75,18 +86,120 @@ const App = () => {
     }
   }, [chatMessages]);
 
+  // Supabase Auth and Profile Management
+  useEffect(() => {
+    setIsDataLoading(true);
+    
+    // Initial session check
+    supabase.auth.getSession().then(({ data: { session } }) => {
+      setSession(session);
+      if (session) {
+        fetchUserProfile(session.user.id);
+      } else {
+        setIsDataLoading(false);
+      }
+    });
+
+    // Listen for auth state changes
+    const { data: { subscription } } = supabase.auth.onAuthStateChange((_event, session) => {
+      setSession(session);
+      if (session) {
+        setPage('app');
+        fetchUserProfile(session.user.id);
+      } else {
+        setProfile(initialProfile);
+        setPlanData(null);
+        setPage('landing');
+        setIsDataLoading(false);
+      }
+    });
+
+    return () => subscription.unsubscribe();
+  }, []);
+
+  const fetchUserProfile = async (userId) => {
+    setIsDataLoading(true);
+    const { data, error } = await supabase
+      .from('profiles')
+      .select('*')
+      .eq('user_id', userId)
+      .single();
+
+    if (error && error.code !== 'PGRST116') {
+      console.error('Error fetching profile:', error.message);
+      setError('Failed to load profile.');
+    } else if (data) {
+      setProfile(prev => ({ 
+          ...initialProfile, 
+          ...data,
+          // Convert numeric fields back to strings for input fields
+          age: String(data.age || ''), 
+          height: String(data.height || ''),
+          currentWeight: String(data.currentWeight || ''),
+          targetWeight: String(data.targetWeight || '')
+      }));
+
+      if (data.last_plan) {
+        setPlanData(data.last_plan);
+      }
+    }
+    setIsDataLoading(false);
+  };
+
+  const saveUserProfile = async (newProfile) => {
+    if (!session?.user?.id) {
+        setError("You must be logged in to save your profile.");
+        return;
+    }
+    setIsLoading(true);
+    
+    const profileToSave = {
+        user_id: session.user.id,
+        ...newProfile,
+        // Ensure numeric fields are correctly typed if the table requires it
+        age: Number(newProfile.age) || null,
+        height: Number(newProfile.height) || null,
+        currentWeight: Number(newProfile.currentWeight) || null,
+        targetWeight: Number(newProfile.targetWeight) || null,
+        last_plan: planData || null, 
+    };
+
+    const { error } = await supabase
+      .from('profiles')
+      .upsert(profileToSave, { onConflict: 'user_id' }); 
+
+    if (error) {
+      console.error('Error saving profile:', error.message);
+      setError('Failed to save profile changes.');
+    } else {
+        setError("Profile saved successfully!");
+    }
+    setIsLoading(false);
+  };
+  
+  const handleLogout = async () => {
+    const { error } = await supabase.auth.signOut();
+    if (error) {
+      console.error('Logout Error:', error.message);
+    }
+    // Auth state change listener handles the rest of the state cleanup
+  };
+
   const handleInputChange = (e) => {
     const { id, value } = e.target;
-    setProfile(prev => ({
-      ...prev,
-      [id]: value,
-    }));
+    setProfile(prev => ({ ...prev, [id]: value }));
   };
 
   const generatePlan = async () => {
     setError(null);
     setPlanData(null);
     setIsLoading(true);
+
+    if (!profile.currentWeight || !profile.height || !profile.targetWeight) {
+        setError("Please enter your height, current weight, and target weight to generate a plan.");
+        setIsLoading(false);
+        return;
+    }
 
     try {
       const weightDiff = Math.abs(parseFloat(profile.targetWeight) - parseFloat(profile.currentWeight));
@@ -166,6 +279,13 @@ Keep it simple and concise. Use exact single numbers only.`;
       };
 
       setPlanData(newPlanData);
+      
+      // Save the plan and current profile after generation
+      if (session?.user?.id) {
+          // Pass the newly generated plan into the save function
+          await saveUserProfile({...profile, last_plan: newPlanData}); 
+      }
+
     } catch (err) {
       console.error("Plan Generation Error:", err);
       setError(`Failed to generate plan: ${err.message}. Please try again.`);
@@ -185,12 +305,18 @@ Keep it simple and concise. Use exact single numbers only.`;
     try {
       const userContext = profile.name ? `
 User Profile Context:
+- Name: ${profile.name}
 - Age: ${profile.age}
 - Gender: ${profile.gender}
+- Current Weight: ${profile.currentWeight} kg
+- Target Weight: ${profile.targetWeight} kg
 - Fitness Goal: ${profile.fitnessGoal}
 - Activity Level: ${profile.activityLevel}
 - Equipment: ${profile.equipment}
 ` : '';
+    
+    const planContext = planData ? `\nCURRENTLY GENERATED PLAN:\n${JSON.stringify(planData.plan)}\n` : '';
+
 
       const payload = {
         model: GROQ_MODEL,
@@ -208,12 +334,13 @@ IMPORTANT RULES:
 
 4. If you detect an off-topic question, respond with: "I'm your fitness assistant and I specialize in workouts, nutrition, and health topics! 💪 Ask me about exercises, training tips, or nutrition advice instead!"
 
+Provide helpful, accurate fitness advice based on current exercise science.
 ${userContext}
-
-Provide helpful, accurate fitness advice based on current exercise science.`
+${planContext}`
           },
-          ...chatMessages.filter(msg => msg.role !== 'system').map(msg => ({ role: msg.role, content: msg.content })),
-          { role: "user", content: chatInput }
+          // Send only the last few messages for context to stay within token limits
+          ...chatMessages.slice(-5).filter(msg => msg.role !== 'system').map(msg => ({ role: msg.role, content: msg.content })),
+          { role: "user", content: userMessage.content }
         ],
         temperature: 0.8,
         max_tokens: 500
@@ -253,10 +380,10 @@ Provide helpful, accurate fitness advice based on current exercise science.`
   };
 
   const OutputContent = () => {
-    if (error) {
+    if (error && !planData) {
       return (
         <div className="bg-red-100 border-l-4 border-red-500 text-red-700 p-4 rounded-lg" role="alert">
-          <p className="font-bold mb-1">Error Generating Plan</p>
+          <p className="font-bold mb-1">Error/Message</p>
           <p className="text-sm">{error}</p>
         </div>
       );
@@ -281,6 +408,9 @@ Provide helpful, accurate fitness advice based on current exercise science.`
         <div className="mb-6 bg-purple-900/40 border-l-4 border-purple-400 p-4 rounded-r-lg shadow-md">
           <h3 className="text-sm font-semibold text-purple-200">Predicted Time to Achieve Target</h3>
           <p className="text-3xl font-extrabold text-purple-300 mt-1">~{planData.predicted_time}</p>
+          <div className="mt-2 text-xs text-indigo-200">
+            *Based on your current profile and goal.
+          </div>
         </div>
 
         <h2 className="text-2xl font-bold text-white mb-4">Recommended Workout Plan</h2>
@@ -309,16 +439,61 @@ Provide helpful, accurate fitness advice based on current exercise science.`
       </div>
     );
   };
+    
+  // Conditional UI rendering for auth/data loading
+  if (isDataLoading) {
+    return (
+        <div className="min-h-screen flex items-center justify-center bg-gradient-to-br from-indigo-900 via-indigo-700 to-purple-700">
+            <div className="flex flex-col items-center">
+                <div className="loader w-12 h-12 border-indigo-400 border-t-purple-300"></div>
+                <p className="mt-4 text-xl text-white font-medium">Loading User Data...</p>
+            </div>
+        </div>
+    );
+  }
+
+  // Conditional Navigation buttons based on session
+  const AuthButtons = () => {
+    if (session) {
+      return (
+        <div className="flex space-x-4">
+            <button 
+                onClick={() => setPage('app')} 
+                className="px-5 py-2 rounded-full bg-indigo-600 hover:bg-indigo-500 text-white font-semibold shadow transition"
+            >
+                App
+            </button>
+            <button 
+                onClick={handleLogout} 
+                className="px-5 py-2 rounded-full bg-red-600 hover:bg-red-500 text-white font-semibold shadow transition"
+            >
+                Logout ({profile.name || 'User'})
+            </button>
+        </div>
+      );
+    }
+    return (
+      <nav className="space-x-4">
+        <button onClick={() => setPage('login')} className="px-5 py-2 rounded-full bg-purple-600 hover:bg-purple-500 text-white font-semibold shadow transition">Login</button>
+        <button onClick={() => setPage('register')} className="px-5 py-2 rounded-full bg-indigo-600 hover:bg-indigo-500 text-white font-semibold shadow transition">Register</button>
+      </nav>
+    );
+  };
 
   return (
     <div className="min-h-screen font-sans bg-gradient-to-br from-indigo-900 via-indigo-700 to-purple-700 text-gray-100">
       {/* Header */}
       <header className="w-full py-6 px-4 flex justify-between items-center bg-indigo-950 shadow-lg">
-        <h1 className="text-3xl sm:text-4xl font-extrabold tracking-tight text-white drop-shadow-lg">AI Fitness Analyst</h1>
-        <nav className="space-x-4">
-          <button onClick={() => setPage('login')} className="px-5 py-2 rounded-full bg-purple-600 hover:bg-purple-500 text-white font-semibold shadow transition">Login</button>
-          <button onClick={() => setPage('register')} className="px-5 py-2 rounded-full bg-indigo-600 hover:bg-indigo-500 text-white font-semibold shadow transition">Register</button>
-        </nav>
+        <div 
+            onClick={() => setPage('landing')} 
+            className="cursor-pointer transition duration-300 hover:text-purple-300" 
+            role="button"
+        >
+          <h1 className="text-3xl sm:text-4xl font-extrabold tracking-tight text-white drop-shadow-lg">
+            AI Fitness Analyst
+          </h1>
+        </div>
+        <AuthButtons /> 
       </header>
 
       {/* Landing Page */}
@@ -327,7 +502,7 @@ Provide helpful, accurate fitness advice based on current exercise science.`
           <h2 className="text-5xl sm:text-7xl font-extrabold text-white tracking-tight mb-4 drop-shadow-lg">
             AI FITNESS ANALYST
           </h2>
-          <p className="text-indigo-201 mt-4 text-lg sm:text-xl font-light leading-relaxed">
+          <p className="text-indigo-200 mt-4 text-lg sm:text-xl font-light leading-relaxed">
             Your personalized companion for workout generation and goal prediction, <span className="font-semibold text-purple-300">powered by AI intelligence</span>.
           </p>
           <div className="mt-6 flex items-center justify-center space-x-2 text-sm text-indigo-300">
@@ -345,14 +520,14 @@ Provide helpful, accurate fitness advice based on current exercise science.`
         </div>
       </div>
 
-      {/* Login Page */}
+      {/* Login Page - Pass supabase client */}
       <div className={`min-h-[70vh] p-6 transition-opacity duration-500 ${page === 'login' ? 'opacity-100 block' : 'opacity-0 hidden'}`}>
-        <Login setPage={setPage} />
+        <Login setPage={setPage} supabase={supabase} />
       </div>
 
-      {/* Register Page */}
+      {/* Register Page - Pass supabase client */}
       <div className={`min-h-[70vh] p-6 transition-opacity duration-500 ${page === 'register' ? 'opacity-100 block' : 'opacity-0 hidden'}`}>
-        <Register setPage={setPage} />
+        <Register setPage={setPage} supabase={supabase} />
       </div>
 
       {/* Main App Page */}
@@ -377,7 +552,7 @@ Provide helpful, accurate fitness advice based on current exercise science.`
                 <div>
                   <label htmlFor="age" className="block text-sm font-medium text-indigo-200">Age</label>
                   <input
-                    type="text"
+                    type="number"
                     id="age"
                     value={profile.age}
                     onChange={handleInputChange}
@@ -386,7 +561,7 @@ Provide helpful, accurate fitness advice based on current exercise science.`
                   />
                 </div>
                 <div>
-                  <label htmlFor="gender" className="block text-sm font.medium text-indigo-200">Gender</label>
+                  <label htmlFor="gender" className="block text-sm font-medium text-indigo-200">Gender</label>
                   <select
                     id="gender"
                     value={profile.gender}
@@ -399,9 +574,9 @@ Provide helpful, accurate fitness advice based on current exercise science.`
                   </select>
                 </div>
                 <div>
-                  <label htmlFor="height" className="block text-sm font.medium text-indigo-200">Height (cm)</label>
+                  <label htmlFor="height" className="block text-sm font-medium text-indigo-200">Height (cm)</label>
                   <input
-                    type="text"
+                    type="number"
                     id="height"
                     value={profile.height}
                     onChange={handleInputChange}
@@ -412,7 +587,7 @@ Provide helpful, accurate fitness advice based on current exercise science.`
                 <div>
                   <label htmlFor="currentWeight" className="block text-sm font-medium text-indigo-200">Current Weight (kg)</label>
                   <input
-                    type="text"
+                    type="number"
                     id="currentWeight"
                     value={profile.currentWeight}
                     onChange={handleInputChange}
@@ -421,9 +596,9 @@ Provide helpful, accurate fitness advice based on current exercise science.`
                   />
                 </div>
                 <div>
-                  <label htmlFor="targetWeight" className="block text.sm font-medium text-indigo-200">Target Weight (kg)</label>
+                  <label htmlFor="targetWeight" className="block text-sm font-medium text-indigo-200">Target Weight (kg)</label>
                   <input
-                    type="text"
+                    type="number"
                     id="targetWeight"
                     value={profile.targetWeight}
                     onChange={handleInputChange}
@@ -444,12 +619,12 @@ Provide helpful, accurate fitness advice based on current exercise science.`
                 <h3 className="text-xl font-bold text-white mb-4">Plan Preferences</h3>
                 <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
                   <div>
-                    <label htmlFor="fitnessGoal" className="block text-sm font.medium text-indigo-200">Fitness Goal</label>
+                    <label htmlFor="fitnessGoal" className="block text-sm font-medium text-indigo-200">Fitness Goal</label>
                     <select
                       id="fitnessGoal"
                       value={profile.fitnessGoal}
                       onChange={handleInputChange}
-                      className="mt-1 block w-full px-3 py-2 bg-indigo-900/60 border border-purple-400 rounded-lg text-sm shadow-sm text.white focus:outline-none focus:border-purple-500 focus:ring-1 focus:ring-purple-500"
+                      className="mt-1 block w-full px-3 py-2 bg-indigo-900/60 border border-purple-400 rounded-lg text-sm shadow-sm text-white focus:outline-none focus:border-purple-500 focus:ring-1 focus:ring-purple-500"
                     >
                       <option value="Weight Loss">Weight Loss</option>
                       <option value="Muscle Gain">Muscle Gain</option>
@@ -458,12 +633,12 @@ Provide helpful, accurate fitness advice based on current exercise science.`
                     </select>
                   </div>
                   <div>
-                    <label htmlFor="activityLevel" className="block text-sm font.medium text-indigo-200">Activity Level</label>
+                    <label htmlFor="activityLevel" className="block text-sm font-medium text-indigo-200">Activity Level</label>
                     <select
                       id="activityLevel"
                       value={profile.activityLevel}
                       onChange={handleInputChange}
-                      className="mt-1 block w.full px-3 py-2 bg-indigo-900/60 border border-purple-400 rounded-lg text.sm shadow-sm text.white focus:outline-none focus:border-purple-500 focus:ring-1 focus:ring-purple-500"
+                      className="mt-1 block w-full px-3 py-2 bg-indigo-900/60 border border-purple-400 rounded-lg text-sm shadow-sm text-white focus:outline-none focus:border-purple-500 focus:ring-1 focus:ring-purple-500"
                     >
                       <option value="Sedentary">Sedentary</option>
                       <option value="Moderate">Moderate</option>
@@ -471,12 +646,12 @@ Provide helpful, accurate fitness advice based on current exercise science.`
                     </select>
                   </div>
                   <div>
-                    <label htmlFor="equipment" className="block text.sm font.medium text-indigo-200">Equipment</label>
+                    <label htmlFor="equipment" className="block text-sm font-medium text-indigo-200">Equipment</label>
                     <select
                       id="equipment"
                       value={profile.equipment}
                       onChange={handleInputChange}
-                      className="mt-1 block w-full px-3 py-2 bg-indigo-900/60 border border-purple-400 rounded-lg text.sm shadow-sm text.white focus:outline-none focus:border-purple-500 focus:ring-1 focus:ring-purple-500"
+                      className="mt-1 block w-full px-3 py-2 bg-indigo-900/60 border border-purple-400 rounded-lg text-sm shadow-sm text-white focus:outline-none focus:border-purple-500 focus:ring-1 focus:ring-purple-500"
                     >
                       <option value="Dumbbells + Bodyweight">Dumbbells + Bodyweight</option>
                       <option value="Bodyweight">Bodyweight</option>
@@ -492,14 +667,24 @@ Provide helpful, accurate fitness advice based on current exercise science.`
                 </div>
               </div>
 
+              {session && (
+                  <button
+                    onClick={() => saveUserProfile(profile)}
+                    disabled={isLoading}
+                    className="w-full mt-8 bg-indigo-600 text-white font-bold py-3 px-4 rounded-xl hover:bg-indigo-700 transition duration-300 shadow-lg disabled:bg-indigo-300 flex items-center justify-center"
+                  >
+                    {isLoading ? 'Saving...' : 'Save Profile'}
+                  </button>
+              )}
+
               <button
                 onClick={generatePlan}
                 disabled={isLoading}
-                className="w.full mt-8 bg-purple-600 text.white font-bold py-3 px-4 rounded-xl hover:bg-purple-700 transition duration-300 shadow-lg disabled:bg-purple-300 flex items-center justify-center"
+                className="w-full mt-4 bg-purple-600 text-white font-bold py-3 px-4 rounded-xl hover:bg-purple-700 transition duration-300 shadow-lg disabled:bg-purple-300 flex items-center justify-center"
               >
                 {isLoading ? (
                   <>
-                    <div className="loader mr-3 border-white border-t-purple-300 w-5 h-5"></div>
+                    <div className="loader mr-3 border-indigo-400 border-t-purple-300 w-5 h-5"></div>
                     Generating Plan...
                   </>
                 ) : (
@@ -516,8 +701,8 @@ Provide helpful, accurate fitness advice based on current exercise science.`
 
           <div className="bg-indigo-950/80 p-6 rounded-2xl shadow-2xl border border-indigo-900 flex flex-col items-center justify-start">
             {isLoading && (
-              <div className="flex flex-col items-center justify-center h.full min-h-[300px] text-center">
-                <div className="loader w-12 h-12"></div>
+              <div className="flex flex-col items-center justify-center h-full min-h-[300px] text-center">
+                <div className="loader w-12 h-12 border-indigo-400 border-t-purple-300"></div>
                 <p className="mt-4 text-lg text-indigo-200 font-medium">Generating your personalized plan...</p>
                 <p className="text-sm text-indigo-300 mt-2">Analyzing your profile with AI</p>
               </div>
@@ -564,6 +749,7 @@ Provide helpful, accurate fitness advice based on current exercise science.`
             <div key={idx} className={`flex ${msg.role === 'user' ? 'justify-end' : 'justify-start'}`}>
               <div className={`max-w-[80%] p-3 rounded-lg ${msg.role === 'user' ? 'bg-gradient-to-r from-purple-600 to-indigo-600 text-white' : 'bg-indigo-800 text-gray-200'}`}>
                 <p className="text-sm whitespace-pre-wrap">{msg.content}</p>
+                {msg.role === 'assistant' && <p className="text-xs text-indigo-300 mt-1">Groq AI</p>}
               </div>
             </div>
           ))}
@@ -606,25 +792,29 @@ Provide helpful, accurate fitness advice based on current exercise science.`
         </div>
       </div>
 
-      {/* Footer */}
-      <footer className="w-full py-6 px-4 bg-indigo-950 text-indigo-300 text-center mt-12 shadow-inner">
+    {/* Footer - Added a footer to enclose the style block correctly */}
+    <footer className="w-full py-6 px-4 bg-indigo-950 text-indigo-300 text-center mt-12 shadow-inner">
         <span className="font-semibold">© 2025 AI Fitness Analyst</span>
-      </footer>
-
-      <style>{`
+    </footer>
+    
+    {/* CSS Style Block */}
+    <style>{`
         .loader {
-          border: 4px solid #f3f3f3;
-          border-top: 4px solid #a78bfa;
-          border-radius: 50%;
-          animation: spin 1s linear infinite;
+            border: 4px solid #3730a3;
+            border-top: 4px solid #a78bfa;
+            border-radius: 50%;
+            animation: spin 1s linear infinite;
         }
         @keyframes spin {
-          0% { transform: rotate(0deg); }
-          100% { transform: rotate(360deg); }
+            0% { transform: rotate(0deg); }
+            100% { transform: rotate(360deg); }
         }
-      `}</style>
+    `}</style>
+
     </div>
   );
 };
 
 export default App;
+
+
