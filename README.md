@@ -30,7 +30,7 @@ Automatic calculation and display of Body Mass Index. AI-Powered Plan Generation
  A modern, dark-themed, and responsive user interface built with Tailwind CSS,Robust API Handling: Uses a `fetchWithRetry` utility for reliable API calls 
 
 # Setup & Installation
-
+ 
 1)Node.js
 2)Install Dependencies (npm install)
 3)Configure API Key
