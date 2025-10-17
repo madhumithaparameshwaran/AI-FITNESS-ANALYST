@@ -496,21 +496,29 @@ ${planContext}`
         <AuthButtons /> 
       </header>
 
-      {/* Landing Page */}
-      <div className={`flex flex-col items-center justify-center min-h-[70vh] text-center p-6 transition-opacity duration-500 ${page === 'landing' ? 'opacity-100 block' : 'opacity-0 hidden'}`}>
-        <div className="max-w-3xl w-full">
-          <h2 className="text-5xl sm:text-7xl font-extrabold text-white tracking-tight mb-4 drop-shadow-lg">
+      {/* Landing Page with Background Image */}
+      <div 
+        className={`flex flex-col items-center justify-center min-h-[70vh] text-center p-6 transition-opacity duration-500 bg-cover bg-center bg-no-repeat relative ${page === 'landing' ? 'opacity-100 block' : 'opacity-0 hidden'}`}
+        style={{
+          backgroundImage: 'url("/pic.jpg")',
+        }}
+      >
+        {/* Dark overlay for better text visibility */}
+        <div className="absolute inset-0 bg-black/50"></div>
+        
+        <div className="max-w-3xl w-full relative z-10">
+          <h2 className="text-5xl sm:text-7xl font-extrabold text-white tracking-tight mb-4 drop-shadow-2xl">
             AI FITNESS ANALYST
           </h2>
-          <p className="text-indigo-200 mt-4 text-lg sm:text-xl font-light leading-relaxed">
-            Your personalized companion for workout generation and goal prediction, <span className="font-semibold text-purple-300">powered by AI intelligence</span>.
+          <p className="text-white mt-4 text-lg sm:text-xl font-light leading-relaxed drop-shadow-xl">
+            Your personalized companion for workout generation and goal prediction, <span className="font-semibold text-purple-300 drop-shadow-lg">powered by AI intelligence</span>.
           </p>
-          <div className="mt-6 flex items-center justify-center space-x-2 text-sm text-indigo-300">
-            <span className="bg-green-400/20 text-green-200 px-3 py-1 rounded-full font-medium">Groq AI</span>
+          <div className="mt-6 flex items-center justify-center space-x-2 text-sm">
+            <span className="bg-green-400/30 text-green-100 px-3 py-1 rounded-full font-medium backdrop-blur-sm shadow-lg">Groq AI</span>
           </div>
           <button
             onClick={() => setPage('app')}
-            className="mt-12 py-3 px-10 text-lg rounded-full font-bold text-white shadow-lg transition duration-300 transform hover:scale-105 active:scale-95 flex items-center justify-center mx-auto bg-purple-600 hover:bg-purple-700"
+            className="mt-12 py-3 px-10 text-lg rounded-full font-bold text-white shadow-2xl transition duration-300 transform hover:scale-105 active:scale-95 flex items-center justify-center mx-auto bg-purple-600 hover:bg-purple-700"
           >
             Get Started
             <svg xmlns="http://www.w3.org/2000/svg" className="h-6 w-6 ml-2" fill="none" viewBox="0 0 24 24" stroke="currentColor">
@@ -816,5 +824,3 @@ ${planContext}`
 };
 
 export default App;
-
-
