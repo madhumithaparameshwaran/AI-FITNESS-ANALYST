@@ -1,17 +1,10 @@
 import React, { useState, useMemo, useRef, useEffect } from 'react';
 import Login from './Login.jsx';
 import Register from './Register.jsx';
-
-// [1] SUPABASE DATABASE CONFIGURATION
-// App.jsx (or whichever file contains this code)
-// ... (Lines 1-5 are fine)
-import { createClient } from "@supabase/supabase-js"; 
-const supabaseUrl = "https://kjqtdqtjufjcmcuehoxp.supabase.co";
-const supabaseAnonKey = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImtqcXRkcXRqdWZqY21jdWVob3hwIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NjA1NDE1MjcsImV4cCI6MjA3NjExNzUyN30.k4QFQzKzt_coIFuvBbPOHzCTGe0YgzTGHWRWD3qTp7Q"; // <--- MUST have closing quote and semicolon
-const supabase = createClient(supabaseUrl, supabaseAnonKey);
+import { supabase } from './supabaseClient.js';
 
 // GROQ API Configuration
-const GROQ_API_KEY = "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";
+const GROQ_API_KEY = "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";
 const GROQ_MODEL = 'llama-3.3-70b-versatile';
 const GROQ_URL = 'https://api.groq.com/openai/v1/chat/completions';
 
@@ -60,6 +53,7 @@ const App = () => {
   const [planData, setPlanData] = useState(null);
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState(null);
+  const [successMessage, setSuccessMessage] = useState(null);
   // Supabase Auth State
   const [session, setSession] = useState(null); 
   const [isDataLoading, setIsDataLoading] = useState(true);
@@ -72,6 +66,7 @@ const App = () => {
   const [chatInput, setChatInput] = useState('');
   const [isChatLoading, setIsChatLoading] = useState(false);
   const chatEndRef = useRef(null);
+  const channelRef = useRef(null);
 
   const currentBMI = useMemo(() => {
     const w = parseFloat(profile.currentWeight);
@@ -81,10 +76,11 @@ const App = () => {
   }, [profile.currentWeight, profile.height]);
 
   useEffect(() => {
-    if (chatEndRef.current) {
-      chatEndRef.current.scrollIntoView({ behavior: 'smooth' });
+    if (successMessage) {
+      const timer = setTimeout(() => setSuccessMessage(null), 5000); // Clear after 5 seconds
+      return () => clearTimeout(timer);
     }
-  }, [chatMessages]);
+  }, [successMessage]);
 
   // Supabase Auth and Profile Management
   useEffect(() => {
@@ -106,11 +102,43 @@ const App = () => {
       if (session) {
         setPage('app');
         fetchUserProfile(session.user.id);
+        // Subscribe to real-time profile changes
+        if (channelRef.current) {
+          channelRef.current.unsubscribe();
+        }
+        channelRef.current = supabase
+          .channel('profile_changes')
+          .on('postgres_changes', { event: '*', schema: 'public', table: 'profiles', filter: `user_id=eq.${session.user.id}` }, (payload) => {
+            console.log('Real-time profile update:', payload);
+            if (payload.eventType === 'UPDATE') {
+              setProfile(prev => ({ 
+                ...prev, 
+                ...payload.new,
+                // Convert numeric fields back to strings for inputs
+                age: String(payload.new.age || ''), 
+                height: String(payload.new.height || ''),
+                currentWeight: String(payload.new.currentweight || ''),
+                targetWeight: String(payload.new.targetweight || ''),
+                fitnessGoal: payload.new.fitnessgoal || '',
+                activityLevel: payload.new.activitylevel || '',
+                equipment: payload.new.equipment || ''
+              }));
+              // Update planData if last_plan changed
+              if (payload.new.last_plan) {
+                setPlanData(payload.new.last_plan);
+              }
+            }
+          })
+          .subscribe();
       } else {
         setProfile(initialProfile);
         setPlanData(null);
         setPage('landing');
         setIsDataLoading(false);
+        if (channelRef.current) {
+          channelRef.current.unsubscribe();
+          channelRef.current = null;
+        }
       }
     });
 
@@ -123,9 +151,9 @@ const App = () => {
       .from('profiles')
       .select('*')
       .eq('user_id', userId)
-      .single();
+      .maybeSingle();
 
-    if (error && error.code !== 'PGRST116') {
+    if (error) {
       console.error('Error fetching profile:', error.message);
       setError('Failed to load profile.');
     } else if (data) {
@@ -135,8 +163,11 @@ const App = () => {
           // Convert numeric fields back to strings for input fields
           age: String(data.age || ''), 
           height: String(data.height || ''),
-          currentWeight: String(data.currentWeight || ''),
-          targetWeight: String(data.targetWeight || '')
+          currentWeight: String(data.currentweight || ''),
+          targetWeight: String(data.targetweight || ''),
+          fitnessGoal: data.fitnessgoal || '',
+          activityLevel: data.activitylevel || '',
+          equipment: data.equipment || ''
       }));
 
       if (data.last_plan) {
@@ -155,24 +186,30 @@ const App = () => {
     
     const profileToSave = {
         user_id: session.user.id,
-        ...newProfile,
-        // Ensure numeric fields are correctly typed if the table requires it
+        name: newProfile.name,
         age: Number(newProfile.age) || null,
+        gender: newProfile.gender,
         height: Number(newProfile.height) || null,
-        currentWeight: Number(newProfile.currentWeight) || null,
-        targetWeight: Number(newProfile.targetWeight) || null,
+        currentweight: Number(newProfile.currentWeight) || null,
+        targetweight: Number(newProfile.targetWeight) || null,
+        fitnessgoal: newProfile.fitnessGoal,
+        activitylevel: newProfile.activityLevel,
+        equipment: newProfile.equipment,
         last_plan: planData || null, 
     };
+
+    console.log('Saving profile:', profileToSave);
 
     const { error } = await supabase
       .from('profiles')
       .upsert(profileToSave, { onConflict: 'user_id' }); 
 
     if (error) {
-      console.error('Error saving profile:', error.message);
-      setError('Failed to save profile changes.');
+      console.error('Error saving profile:', error);
+      setError('Failed to save profile: ' + error.message);
     } else {
-        setError("Profile saved successfully!");
+        setSuccessMessage("Profile saved successfully!");
+        setError(null); // Clear any previous error
     }
     setIsLoading(false);
   };
@@ -284,6 +321,7 @@ Keep it simple and concise. Use exact single numbers only.`;
       if (session?.user?.id) {
           // Pass the newly generated plan into the save function
           await saveUserProfile({...profile, last_plan: newPlanData}); 
+          setSuccessMessage("Fitness plan generated and saved successfully!");
       }
 
     } catch (err) {
@@ -380,6 +418,15 @@ ${planContext}`
   };
 
   const OutputContent = () => {
+    if (successMessage) {
+      return (
+        <div className="bg-green-100 border-l-4 border-green-500 text-green-700 p-4 rounded-lg" role="alert">
+          <p className="font-bold mb-1">Success!</p>
+          <p className="text-sm">{successMessage}</p>
+        </div>
+      );
+    }
+
     if (error && !planData) {
       return (
         <div className="bg-red-100 border-l-4 border-red-500 text-red-700 p-4 rounded-lg" role="alert">
@@ -517,7 +564,7 @@ ${planContext}`
             <span className="bg-green-400/30 text-green-100 px-3 py-1 rounded-full font-medium backdrop-blur-sm shadow-lg">Groq AI</span>
           </div>
           <button
-            onClick={() => setPage('app')}
+            onClick={() => session ? setPage('app') : setPage('login')}
             className="mt-12 py-3 px-10 text-lg rounded-full font-bold text-white shadow-2xl transition duration-300 transform hover:scale-105 active:scale-95 flex items-center justify-center mx-auto bg-purple-600 hover:bg-purple-700"
           >
             Get Started
@@ -539,7 +586,8 @@ ${planContext}`
       </div>
 
       {/* Main App Page */}
-      <div className={`min-h-[70vh] p-4 sm:p-8 transition-opacity duration-500 ${page === 'app' ? 'opacity-100 block' : 'opacity-0 hidden'}`}>
+      {session && (
+        <div className={`min-h-[70vh] p-4 sm:p-8 transition-opacity duration-500 ${page === 'app' ? 'opacity-100 block' : 'opacity-0 hidden'}`}>
         <div className="max-w-7xl mx-auto grid grid-cols-1 lg:grid-cols-2 gap-8">
           <div className="bg-indigo-950/80 p-6 rounded-2xl shadow-2xl border border-indigo-900">
             <h2 className="text-2xl font-bold text-white mb-6">Your Fitness Profile</h2>
@@ -718,7 +766,8 @@ ${planContext}`
             {!isLoading && <OutputContent />}
           </div>
         </div>
-      </div>
+        </div>
+      )}
 
       {/* Chatbot Button */}
       <button
